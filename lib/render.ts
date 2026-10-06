@@ -99,21 +99,22 @@ export function renderScreen(
 					"╮",
 			),
 		);
+		// 边框字符统一用 accent 着色：否则无色行/带条行的 │ 会落到终端默认色（白），
+		// 在同一列的粉色边框上形成“白边”断层
+		const A = (s: string) => colorize("accent", s);
 		for (const row of panel.rows) {
-			let line = `│ ${row.text}`;
 			if (row.bar) {
 				const barWidth = Math.max(8, Math.min(20, inner - 26));
 				const bar = makeBar(row.bar.frac, barWidth);
-				// 在文本行内嵌彩色条：文本部分手动补位后拼接
-				const head = padEndWidth(`│ ${row.text}`, Math.max(0, inner + 2 - barWidth));
-				line = `${head}${colorize(bar.color, bar.text)} │`;
-				out.push(line);
+				// 在文本行内嵌彩色条：仅边框着 accent，文本与补位空格保持各自颜色
+				const head = padEndWidth(row.text, Math.max(0, inner - barWidth));
+				out.push(`${A("│ ")}${head}${colorize(bar.color, bar.text)}${A(" │")}`);
 				continue;
 			}
 			const plain = row.text;
 			const padTo = Math.max(0, inner + 1 - displayWidth(plain));
-			line = `│ ${plain}${" ".repeat(padTo)}│`;
-			out.push(row.color ? colorize(row.color, line) : line);
+			const body = `${plain}${" ".repeat(padTo)}`;
+			out.push(`${A("│ ")}${row.color ? colorize(row.color, body) : body}${A("│")}`);
 		}
 		out.push(colorize("accent", "╰" + "─".repeat(inner + 2) + "╯"));
 	}
