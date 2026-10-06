@@ -1,0 +1,88 @@
+import { readFile } from 'node:fs/promises';
+import { resolve, dirname } from 'node:path';
+import vm from 'node:vm';
+import ts from 'typescript';
+
+export const plain = value => JSON.parse(JSON.stringify(value));
+export const report = (id = 'alpha', overrides = {}) => ({
+  providerId: id, providerName: id, buckets: [
+    { id: 'five-hour', label: '5 小时', unit: 'percent', used: 58, remaining: 42, limit: 100 },
+    { id: 'weekly', label: '本周', unit: 'percent', used: 13, remaining: 87, limit: 100 },
+  ], metrics: [], ...overrides,
+});
+
+/** Run the public extension entrypoint with deterministic pi/engine/clock/IO boundaries. */
+export async function createHarness(options = {}) {
+  const state = { now: 1_800_000_000_000, config: undefined, calls: [], statuses: [], notifications: [],
+    timers: [], active: 0, maxActive: 0, ...options };
+  const adapters = options.adapters ?? [{ id: 'alpha', displayName: 'Alpha' }];
+  const commands = new Map();
+  const events = new Map();
+  const auth = () => ({ fingerprint: 'fingerprint', secrets: ['secret-key'] });
+  const ctx = {
+    model: { provider: 'alpha', id: 'model' }, hasUI: false,
+    sessionManager: { getSessionId: () => 'session' },
+    modelRegistry: {
+      getProviderAuthStatus: () => ({ configured: true }),
+      getProvider: () => ({ baseUrl: 'https://provider.example' }),
+      getProviderAuth: async () => ({ auth: { apiKey: 'extra-key' } }),
+    },
+    ui: {
+      theme: { prefix: 'color', fg(color, text) { return `${this.prefix}:${color}(${text})`; } },
+      setStatus: (key, text) => state.statuses.push({ key, text }),
+      notify: (text, level) => state.notifications.push({ text, level }),
+    },
+  };
+  const engine = {
+    usageAdapters: () => adapters,
+    providerIsConfigured: (_ctx, id) => state.configured?.(id) ?? true,
+    resolveUsageAuth: async (...args) => state.resolveAuth ? state.resolveAuth(...args) : auth(),
+    queryProviderUsage: async (...args) => {
+      const [adapter, auth, signal, timeout, guard] = args;
+      state.calls.push({ id: adapter.id, auth, signal, timeout });
+      state.active++; state.maxActive = Math.max(state.maxActive, state.active);
+      try { return state.query ? await state.query(...args) : (await guard(), report(adapter.id)); }
+      finally { state.active--; }
+    },
+    redactUsageError: (message, secrets = []) => secrets.reduce((s, secret) => s.split(String(secret)).join('[REDACTED]'), message),
+    abortError: () => new Error('aborted'),
+  };
+  const context = vm.createContext({
+    console, AbortController, Error,
+    Date: class extends Date { static now() { return state.now; } },
+    process: { env: { PI_CODING_AGENT_DIR: '/test-agent' } },
+    setInterval: (fn, ms) => { const timer = { fn, ms, unref() { this.unreferenced = true; } }; state.timers.push(timer); return timer; },
+    clearInterval: timer => { timer.cleared = true; },
+  });
+  const mocks = {
+    'node:fs': { readFileSync: () => { if (state.config === undefined) throw new Error('ENOENT'); return state.config; } },
+    'node:os': { homedir: () => '/home/test' },
+    'node:path': { join: (...args) => args.join('/') },
+    '@earendil-works/pi-coding-agent': { readStoredCredential: async id => state.credential?.(id) },
+    '@narumitw/pi-usage/dist/index.ts': engine,
+  };
+  const modules = new Map();
+  async function load(file) {
+    if (modules.has(file)) return modules.get(file);
+    if (mocks[file]) {
+      const exports = mocks[file];
+      const mod = new vm.SyntheticModule(Object.keys(exports), function () {
+        for (const [key, value] of Object.entries(exports)) this.setExport(key, value);
+      }, { context, identifier: file });
+      modules.set(file, mod); return mod;
+    }
+    const source = await readFile(file, 'utf8');
+    const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } });
+    const mod = new vm.SourceTextModule(outputText, { context, identifier: file });
+    modules.set(file, mod); return mod;
+  }
+  const entry = await load(resolve(process.env.USAGE_DASH_TEST_ENTRY ?? 'extensions/usage-dash.ts'));
+  await entry.link((specifier, parent) => load(specifier.startsWith('.') ? resolve(dirname(parent.identifier), specifier) : specifier));
+  await entry.evaluate();
+  entry.namespace.default({ registerCommand: (name, command) => commands.set(name, command), on: (name, fn) => events.set(name, fn) });
+  return { state, ctx, api: entry.namespace, commands, events,
+    command: (args = '') => commands.get('usage').handler(args, ctx),
+    event: (name, event = {}) => events.get(name)(event, ctx),
+    settle: async () => { for (let i = 0; i < 100; i++) await Promise.resolve(); },
+  };
+}
