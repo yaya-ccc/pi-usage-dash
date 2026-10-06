@@ -29,7 +29,8 @@ function buildPanels(results: QueryResult[], activeProvider: string | undefined)
 				const pct = Math.round(frac * 100);
 				const reset = fmtReset(bucket.resetsAt);
 				rows.push({
-					text: `${label}${pct}%${reset ? `  ${reset}` : ""}`,
+					// 固定留一空格：label 截断（如 Weekly wind…）时百分比不会粘在省略号上
+					text: `${label} ${pct}%${reset ? `  ${reset}` : ""}`,
 					bar: { frac },
 				});
 			} else {
@@ -89,7 +90,15 @@ export function renderScreen(
 	}
 
 	for (const panel of panels) {
-		out.push(colorize("accent", `╭─ ${panel.title} ` + "─".repeat(Math.max(1, inner - panel.title.length - 1)) + "╮"));
+		// 顶边宽度按显示宽度（CJK 计 2 列）补齐，否则含中文的标题会让 ╮ 超出右边框
+		out.push(
+			colorize(
+				"accent",
+				`╭─ ${panel.title} ` +
+					"─".repeat(Math.max(1, inner - displayWidth(panel.title) - 1)) +
+					"╮",
+			),
+		);
 		for (const row of panel.rows) {
 			let line = `│ ${row.text}`;
 			if (row.bar) {
