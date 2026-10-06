@@ -1,6 +1,6 @@
 {
 	"name": "@yaya-ccc/pi-usage-dash",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Pi /usage dashboard + statusline for all configured providers (engine: pi-usage), with configurable extra usage sources reusing built-in adapters.",
 	"license": "MIT",
 	"type": "module",
