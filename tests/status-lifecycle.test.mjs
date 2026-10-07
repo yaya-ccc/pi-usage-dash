@@ -79,7 +79,7 @@ for (const phase of ['baseUrl', 'credential']) {
   test(`extra-source ${phase} lookup respects shutdown while awaiting auth`, async () => {
     const auth = deferred();
     const h = await createHarness({
-      config: JSON.stringify([{ id: 'extra', reuseAdapter: 'alpha', ...(phase === 'credential' ? { baseUrl: 'https://quota.example' } : {}) }]),
+      config: JSON.stringify({ sources: [{ id: 'extra', reuseAdapter: 'alpha', ...(phase === 'credential' ? { baseUrl: 'https://quota.example' } : {}) }] }),
       configured: () => false,
     });
     h.ctx.model.provider = 'extra';

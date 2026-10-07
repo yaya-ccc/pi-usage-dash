@@ -1,7 +1,7 @@
 import { isStaleExtensionContextError, usageAdapters } from "@narumitw/pi-usage/dist/index.ts";
-import { loadExtraSources } from "./config.ts";
+import { loadDashConfig } from "./config.ts";
 import { cancelQueries, queryAll } from "./query.ts";
-import type { Adapter, Bucket, Metric, QueryResult, StatusSpan, UsageReport } from "./types.ts";
+import type { Adapter, Bucket, Metric, QueryResult, StatusOverride, StatusSpan, UsageReport } from "./types.ts";
 
 const STATUS_KEY = "usage";
 const STATUS_REFRESH_MS = 5 * 60_000;
@@ -52,23 +52,24 @@ export function pickBalance(metrics: Metric[]): { value: number; currency: strin
 	return chosen;
 }
 
-/** 由单个 provider 报告生成状态行片段；无可展示数据返回空数组 */
-export function buildStatusSpans(report: UsageReport): StatusSpan[] {
+/** 由单个 provider 报告生成状态行片段；override 为合并后的展示覆盖，缺省走引擎默认。无可展示数据返回空数组 */
+export function buildStatusSpans(report: UsageReport, override?: StatusOverride): StatusSpan[] {
+	const windows = override?.windows?.length ? override.windows : DEFAULT_STATUS_WINDOWS;
+	const maxSpans = override?.maxSpans !== undefined && override.maxSpans > 0 ? override.maxSpans : DEFAULT_STATUS_MAX_SPANS;
 	const groups: StatusSpan[][] = [];
-	const windows: Array<[string, string]> = [
-		["five-hour", "5h"],
-		["weekly", "7d"],
-	];
-	for (const [id, tag] of windows) {
-		const bucket = report.buckets.find(b => b.id === id);
+	for (const minutes of windows) {
+		if (groups.length >= maxSpans) break;
+		const bucket = findWindowBucket(report, minutes);
 		if (!bucket) continue;
 		const pct = remainingPercent(bucket);
 		if (pct === undefined) continue;
+		const tag = override?.tags?.[String(minutes)] ?? autoWindowTag(minutes);
 		groups.push([{ text: `${pct}%`, color: tierColor(pct) }, { text: `·${tag}` }]);
 	}
 	if (groups.length > 0) {
 		return groups.flatMap((group, index) => (index > 0 ? [{ text: " " }, ...group] : group));
 	}
+	if (override?.balanceFallback === false) return [];
 	const balance = pickBalance(report.metrics);
 	if (balance) return [{ text: formatCurrencyAmount(balance.value, balance.currency), color: "success" }];
 	return [];
@@ -120,14 +121,47 @@ function handleStatusQueryFailure(ctx: unknown): void {
 	safeSetStatus(ctx, renderSpans(statusLast, colorize) + colorize("dim", " ·stale"));
 }
 
+/** 引擎默认：优先 5h + 7d 两个窗口，最多两段（配置 status 段可按 provider 覆盖） */
+const DEFAULT_STATUS_WINDOWS = [300, 10080];
+const DEFAULT_STATUS_MAX_SPANS = 2;
+/** 无 windowMinutes 的存量桶按窗口 ID 兜底识别（kimi / openrouter 等归一化 ID） */
+const WINDOW_ID_FALLBACK = new Map<number, string[]>([
+	[300, ["five-hour"]],
+	[10080, ["weekly"]],
+]);
+
+/** 窗口标签自动生成：<1 天按小时（5h），≥1 天按天（1d / 7d / 30d），免配置即用 */
+export function autoWindowTag(minutes: number): string {
+	if (!Number.isFinite(minutes) || minutes <= 0) return String(minutes);
+	if (minutes < 1440) return `${Math.max(1, Math.round(minutes / 60))}h`;
+	return `${Math.max(1, Math.round(minutes / 1440))}d`;
+}
+
+/** 按窗口分钟数选桶：windowMinutes 优先，存量 ID 兜底；count 型桶只要有 remaining/limit 同样可算百分比 */
+function findWindowBucket(report: UsageReport, minutes: number): Bucket | undefined {
+	const byMinutes = report.buckets.find(b => b.windowMinutes === minutes && remainingPercent(b) !== undefined);
+	if (byMinutes) return byMinutes;
+	const ids = WINDOW_ID_FALLBACK.get(minutes);
+	return ids
+		? report.buckets.find(b => b.id !== undefined && ids.includes(b.id) && remainingPercent(b) !== undefined)
+		: undefined;
+}
+
 /** 活跃 provider 是否属于可查询集合（pi-usage 内置 + 配置文件里的额外源 id） */
 function isStatusProvider(provider: string): boolean {
 	if ((usageAdapters() as Adapter[]).some(a => a.id === provider)) return true;
 	// 只看 schema 合法性：reuseAdapter/baseUrl 非法的条目在 statusline 路径
 	// 查询失败后走 ·stale/清空降级，无需在此重复校验
-	return loadExtraSources().sources.some(s => s.id === provider);
+	return loadDashConfig().sources.some(s => s.id === provider);
 }
 
+/** 汇总 status 配置：default 与 providers[provider] 浅合并（后者同名字段优先） */
+function resolveStatusOverride(provider: string | undefined): StatusOverride {
+	const { status } = loadDashConfig();
+	const merged: StatusOverride = { ...status.default };
+	if (provider && status.providers?.[provider]) Object.assign(merged, status.providers[provider]);
+	return merged;
+}
 /** 从既有查询结果发布活跃 provider 的状态（/usage 与定时/事件刷新共用） */
 export function publishFromResults(ctx: unknown, results: QueryResult[], provider: string | undefined): void {
 	statusRevision += 1;
@@ -140,10 +174,10 @@ export function publishFromResults(ctx: unknown, results: QueryResult[], provide
 		handleStatusQueryFailure(ctx);
 		return;
 	}
-	const spans = buildStatusSpans(found.report);
+	const spans = buildStatusSpans(found.report, resolveStatusOverride(provider));
 	statusFailures = 0;
 	if (spans.length === 0) {
-		clearStatus(ctx); // 查询成功但无 5h/7d/余额数据
+		clearStatus(ctx); // 查询成功但无窗口/余额数据（含 balanceFallback 关闭）
 		return;
 	}
 	statusLast = spans;

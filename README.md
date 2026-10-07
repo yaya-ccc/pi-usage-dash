@@ -6,13 +6,14 @@
 
 - **聚合查询**：基于 [`@narumitw/pi-usage`](https://www.npmjs.com/package/@narumitw/pi-usage) 引擎（固定 `0.61.2`）拉取全部已登录 provider 的额度与用量；内置源 60s 内走缓存，单源 15s 超时不拖垮整体
 - **omp 风格仪表盘**：`/usage` 全屏面板按 provider 分栏，进度条 + 剩余比例 + 重置时间，余额型显示剩余金额
-- **状态栏剩余配额**：跟随活跃 provider 显示 `42%·5h 87%·7d`（≥50% 绿 / ≥20% 黄 / 其余红，余额型显示单币种余额）；每 5 分钟 + 每轮任务自动刷新，连续 3 次失败自动清空
+- **状态栏剩余配额**：跟随活跃 provider 显示 `77%·5h 96%·7d`（≥50% 绿 / ≥20% 黄 / 其余红，余额型显示单币种余额）。窗口引擎按桶的 `windowMinutes` 免配置识别（300→5h、10080→7d，存量 `five-hour`/`weekly` 桶 ID 兜底），codex 的 `codex:primary/secondary`、zai 系窗口等均自动点亮；每 5 分钟 + 每轮任务自动刷新，连续 3 次失败自动清空
 - **额外用量源**：`usage-dash.json` 声明 pi-usage 内置列表之外的 provider，复用内置 adapter 的查询逻辑，凭据与端点各取所需
+- **状态栏展示覆盖**：`usage-dash.json` 的 `status` 段可按 provider 覆盖窗口序列、段数上限、窗口标签与余额兑底；新 provider 多数情况零配置
 
 ## 安装
 
 ```bash
-pi install git:github.com/yaya-ccc/pi-usage-dash@v0.1.3
+pi install git:github.com/yaya-ccc/pi-usage-dash@v0.2.0
 ```
 
 > 若同时以 pi 包形式安装了 `@narumitw/pi-usage` 本体，请禁用其扩展入口避免 `/usage` 命令冲突（本扩展只将它用作查询引擎库）：
@@ -35,22 +36,34 @@ pi install git:github.com/yaya-ccc/pi-usage-dash@v0.1.3
 /usage refresh   强制刷新全部
 ```
 
-## 额外用量源
+## 配置文件
 
-pi-usage 内置列表之外的 provider（自定义 provider 扩展注册的，如 [pi-zcode](https://github.com/yaya-ccc/pi-zcode) 的 `zcode`）通过配置文件声明：
-
-**`<agent-dir>/usage-dash.json`**（默认 `~/.pi/agent/usage-dash.json`，可用 `PI_CODING_AGENT_DIR` 覆盖）
+**`<agent-dir>/usage-dash.json`**（默认 `~/.pi/agent/usage-dash.json`，可用 `PI_CODING_AGENT_DIR` 覆盖）v0.2 起为对象 schema，含 `sources`（额外用量源）与 `status`（状态栏覆盖）两段：
 
 ```json
-[
-	{
-		"id": "zcode",
-		"displayName": "ZCode · 智谱",
-		"reuseAdapter": "zai-coding-cn",
-		"baseUrl": "https://open.bigmodel.cn/api/coding/paas/v4"
+{
+	"sources": [
+		{
+			"id": "zcode",
+			"displayName": "ZCode · 智谱",
+			"reuseAdapter": "zai-coding-cn",
+			"baseUrl": "https://open.bigmodel.cn/api/coding/paas/v4"
+		}
+	],
+	"status": {
+		"default": { "windows": [300, 10080], "maxSpans": 2 },
+		"providers": {
+			"kimi-coding": { "windows": [300, 10080, 43200], "tags": { "43200": "mo" } }
+		}
 	}
-]
+}
 ```
+
+> v0.1.x 的顶层数组 schema 已废弃：把原数组包进 `{"sources": …}` 即完成迁移。
+
+### 额外用量源（sources）
+
+pi-usage 内置列表之外的 provider（自定义 provider 扩展注册的，如 [pi-zcode](https://github.com/yaya-ccc/pi-zcode) 的 `zcode`）通过 `sources` 声明：
 
 | 字段 | 说明 |
 |---|---|
@@ -63,9 +76,29 @@ pi-usage 内置列表之外的 provider（自定义 provider 扩展注册的，�
 
 行为约定：
 
-- 配置文件缺失 = 仅内置源；未注册 / 未登录的条目静默跳过（不显示面板）
+- 配置文件缺失 = 仅内置源、状态栏走引擎默认；未注册 / 未登录的条目静默跳过（不显示面板）
 - schema 非法、`reuseAdapter` 不存在、两级 baseUrl 都解析不到 → 该条跳过 + `/usage` 面板顶部黄字警告（第几条、什么错），不影响其余查询
 - 新 provider 的用量 API 与所有内置 adapter 都不同构时，配置表达不了：给本包加真适配器实现，或向上游 pi-usage 提 PR（成了之后 `reuseAdapter` 指过去即可）
+
+### 状态栏覆盖（status）
+
+窗口引擎免配置：桶带 `windowMinutes`（pi-usage 归一化后的窗口桶普遍携带）即自动识别，标签自动生成（<1 天按小时 `5h`，≥1 天按天 `1d`/`7d`/`30d`）；无窗口桶时回退货币余额（DeepSeek 等）。`status` 段只做例外覆盖，未配置的 provider 全走引擎默认（优先 5h + 7d，最多两段）：
+
+| 字段 | 说明 |
+|---|---|
+| `default` | 全局默认覆盖，作用于所有 provider |
+| `providers` | 按 provider id 索引的覆盖，同名字段优先于 `default` |
+
+单个覆盖对象的可选字段：
+
+| 字段 | 说明 |
+|---|---|
+| `windows` | 窗口分钟数序列（如 `[300, 10080, 43200]`），按序展示；桶优先按 `windowMinutes` 匹配，`five-hour`/`weekly` 桶 ID 兜底 |
+| `maxSpans` | 状态栏最多展示几段窗口（默认 2） |
+| `tags` | 「分钟数字符串 → 标签」映射，覆盖自动生成的标签（如 `{"43200": "mo"}`） |
+| `balanceFallback` | 无窗口时是否回退货币余额（默认 `true`，置 `false` 则清空） |
+
+非法字段降级为 `/usage` 面板黄字警告并忽略，不影响其余配置。
 
 ## 开发
 
@@ -83,7 +116,7 @@ npm pack --dry-run     # 检查发布文件
 |---|---|
 | `extensions/usage-dash.ts` | 命令注册、交互面板和生命周期事件 |
 | `lib/types.ts` | 报告、查询结果和状态栏的共享类型 |
-| `lib/config.ts` | 额外源配置读取、校验及 baseUrl 解析 |
+| `lib/config.ts` | 配置文件读取校验（额外源 + 状态栏覆盖）及 baseUrl 解析 |
 | `lib/query.ts` | 内置源和额外源查询、缓存、并发及凭据校验 |
 | `lib/format.ts` | 数值、时长、进度条及文本宽度格式化 |
 | `lib/status.ts` | 状态栏内容、定时刷新及失败降级 |
@@ -95,6 +128,12 @@ npm pack --dry-run     # 检查发布文件
 ### 查询引擎升级检查
 
 `@narumitw/pi-usage` 固定为 `0.61.2`。升级前核对 `@narumitw/pi-usage/dist/index.ts` 中以下导出及其调用参数，再跑回归测试并用实际账号验证：`usageAdapters`、`providerIsConfigured`、`resolveUsageAuth`、`queryProviderUsage`、`redactUsageError`、`abortError`、`isStaleExtensionContextError`。
+
+## v0.2.0 状态栏通用窗口引擎
+
+- 状态栏不再按桶 ID 白名单（`five-hour`/`weekly`）选桶，改为按 `windowMinutes` 免配置识别窗口，存量 ID 兜底：openai-codex（`codex:primary/secondary`）、zai 系（zcode 等额外源）等原先查得到却显示不出的窗口自动点亮。
+- 窗口标签自动生成（`5h`/`1d`/`7d`/`30d`），`status.tags` 可按分钟数覆盖。
+- `usage-dash.json` 升级为对象 schema `{sources, status}`，新增 `status.default` / `status.providers.<id>` 两层覆盖：窗口序列 `windows`、段数上限 `maxSpans`、标签 `tags`、余额兑底开关 `balanceFallback`。**不再接受 v0.1.x 顶层数组**（迁移：数组包进 `{"sources": …}`）。
 
 ## v0.1.3 修复
 

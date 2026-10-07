@@ -4,6 +4,35 @@ import { readFile } from 'node:fs/promises';
 import { createHarness, plain, report } from './harness.mjs';
 
 const metric = (value, currency, id) => ({ value, currency, id, unit: 'currency', label: '余额' });
+const codexReport = () => report('openai-codex', { buckets: [
+  { id: 'codex:primary', label: 'Primary limit', unit: 'percent', used: 23, remaining: 77, limit: 100, windowMinutes: 300 },
+  { id: 'codex:secondary', label: 'Secondary limit', unit: 'percent', used: 4, remaining: 96, limit: 100, windowMinutes: 10080 },
+  { id: 'codex:credits', label: 'Credits', unit: 'count', used: 18, remaining: 12, limit: 30, windowMinutes: 1440 },
+], metrics: [{ id: 'credits', label: 'Credits', value: 'none' }] });
+
+test('generic window engine: windowMinutes matching, tag generation and overrides', async () => {
+  const { api, status } = await createHarness();
+  // codex 桶 id 不在白名单，靠 windowMinutes 免配置点亮；1440 分钟窗口不在默认序列，不选
+  assert.deepEqual(plain(api.buildStatusSpans(codexReport())), [
+    { text: '77%', color: 'success' }, { text: '·5h' }, { text: ' ' }, { text: '96%', color: 'success' }, { text: '·7d' },
+  ]);
+  // 标签自动生成：<1 天按小时，≥1 天按天
+  assert.equal(status.autoWindowTag(300), '5h');
+  assert.equal(status.autoWindowTag(1440), '1d');
+  assert.equal(status.autoWindowTag(10080), '7d');
+  assert.equal(status.autoWindowTag(43200), '30d');
+  // 窗口序列 + 标签覆盖：1440 选 count 桶，43200 用自定义标签 mo
+  const monthly = { ...codexReport(), buckets: [...codexReport().buckets, { id: 'm', label: '月窗', unit: 'percent', used: 10, remaining: 90, limit: 100, windowMinutes: 43200 }] };
+  assert.deepEqual(plain(api.buildStatusSpans(monthly, { windows: [1440, 43200], tags: { '43200': 'mo' } })), [
+    { text: '40%', color: 'warning' }, { text: '·1d' }, { text: ' ' }, { text: '90%', color: 'success' }, { text: '·mo' },
+  ]);
+  // maxSpans 截断：只显第一段
+  assert.deepEqual(plain(api.buildStatusSpans(codexReport(), { maxSpans: 1 })), [
+    { text: '77%', color: 'success' }, { text: '·5h' },
+  ]);
+  // balanceFallback 关闭：无窗口时不回退货币余额
+  assert.deepEqual(plain(api.buildStatusSpans(report('x', { buckets: [], metrics: [metric(1, 'USD')] }), { balanceFallback: false })), []);
+});
 
 test('public exports, percentage boundaries, window precedence and balance selection', async () => {
   const { api } = await createHarness();
@@ -68,7 +97,7 @@ test('worker pool caps concurrency at four and sorts success before errors', asy
 });
 
 test('extra source adapter reuse, URL fallback, account label and existing live-query behavior', async () => {
-  const h = await createHarness({ config: JSON.stringify([{ id:'extra', reuseAdapter:'alpha', displayName:'Extra', baseUrl:' https://quota.example ' }]), configured: () => false, credential: () => ({ accountName:' Account ' }) });
+  const h = await createHarness({ config: JSON.stringify({ sources: [{ id:'extra', reuseAdapter:'alpha', displayName:'Extra', baseUrl:' https://quota.example ' }] }), configured: () => false, credential: () => ({ accountName:' Account ' }) });
   h.ctx.model.provider = 'extra';
   await h.command(); await h.command();
   assert.equal(h.state.calls.length, 2); // Extra sources intentionally bypass the built-in TTL.
@@ -76,7 +105,7 @@ test('extra source adapter reuse, URL fallback, account label and existing live-
   assert.equal(h.state.calls[0].auth.model.baseUrl, 'https://quota.example');
   assert.equal(h.state.calls[0].auth.headers.Authorization, 'Bearer extra-key');
   assert.match(h.state.notifications.at(-1).text, /Account/);
-  h.state.config = JSON.stringify([{ id:'extra', reuseAdapter:'alpha' }]);
+  h.state.config = JSON.stringify({ sources: [{ id:'extra', reuseAdapter:'alpha' }] });
   await h.command(); assert.equal(h.state.calls.at(-1).auth.model.baseUrl, 'https://provider.example');
   h.ctx.modelRegistry.getProvider = () => undefined;
   h.ctx.modelRegistry.getProviderAuth = async () => ({ auth: { apiKey:'extra-key', baseUrl:'https://auth.example' } });
@@ -86,7 +115,8 @@ test('extra source adapter reuse, URL fallback, account label and existing live-
 });
 
 test('config warnings, missing authentication, unsupported providers and error panels match baseline', async () => {
-  const h = await createHarness({ config: JSON.stringify([null,{}, {id:'missing'}, {id:'bad-name',reuseAdapter:'alpha',displayName:1}, {id:'bad-url',reuseAdapter:'alpha',baseUrl:1}, {id:'unknown',reuseAdapter:'nope'}, {id:'no-url',reuseAdapter:'alpha'}]) });
+  const h = await createHarness({ config: JSON.stringify({ sources: [null,{}, {id:'missing'}, {id:'bad-name',reuseAdapter:'alpha',displayName:1}, {id:'bad-url',reuseAdapter:'alpha',baseUrl:1}, {id:'unknown',reuseAdapter:'nope'}, {id:'no-url',reuseAdapter:'alpha'}],
+    status: { default: { windows: 'x', maxSpans: 0 }, providers: { a: { tags: { x: 'y' } }, '': { maxSpans: 1 } } } }) });
   h.ctx.model.provider = 'unsupported';
   h.ctx.modelRegistry.getProvider = () => undefined;
   h.ctx.modelRegistry.getProviderAuth = async () => undefined;
@@ -94,8 +124,28 @@ test('config warnings, missing authentication, unsupported providers and error p
   await h.command();
   const expected = JSON.parse(await readFile(new URL('./fixtures/warnings.json', import.meta.url), 'utf8'));
   assert.equal(h.state.notifications.at(-1).text, expected);
-  h.state.config = '{}'; await h.command(); assert.match(h.state.notifications.at(-1).text, /顶层应为数组/);
+  h.state.config = '[]'; await h.command(); assert.match(h.state.notifications.at(-1).text, /顶层应为对象/);
+  h.state.config = '{}'; await h.command(); assert.doesNotMatch(h.state.notifications.at(-1).text, /顶层应为对象/);
   h.state.config = '{'; await h.command(); assert.match(h.state.notifications.at(-1).text, /不是合法 JSON/);
+});
+
+test('status overrides from config drive the status line end to end', async () => {
+  const h = await createHarness({ adapters: [{ id: 'codexish', displayName: 'Codexish' }],
+    query: async adapter => report(adapter.id, { buckets: [
+      { id: 'codex:primary', label: 'Primary limit', unit: 'percent', used: 23, remaining: 77, limit: 100, windowMinutes: 300 },
+      { id: 'codex:secondary', label: 'Secondary limit', unit: 'percent', used: 4, remaining: 96, limit: 100, windowMinutes: 10080 },
+    ], metrics: [] }),
+    config: JSON.stringify({ sources: [], status: { default: { maxSpans: 1 }, providers: { codexish: { tags: { '300': '今' } } } } }) });
+  h.ctx.model.provider = 'codexish';
+  h.event('session_start'); await h.settle();
+  // default 与 providers 浅合并：maxSpans=1 截断 + 300 窗标签覆盖
+  assert.deepEqual(h.state.calls.map(c => c.id), ['codexish']);
+  assert.match(h.state.statuses.at(-1).text, /color:success\(77%\)·今/);
+  assert.doesNotMatch(h.state.statuses.at(-1).text, /7d/);
+  h.state.config = JSON.stringify({ sources: [], status: { providers: { codexish: { windows: [10080] } } } });
+  h.state.now += 60_000; h.state.timers[0].fn(); await h.settle();
+  assert.match(h.state.statuses.at(-1).text, /color:success\(96%\)·7d/);
+  assert.doesNotMatch(h.state.statuses.at(-1).text, /5h/);
 });
 
 test('status lifecycle: active-only refresh, timer reuse, stale retention, third failure clears, shutdown', async () => {
@@ -127,7 +177,7 @@ test('theme method binding, theme failures and missing status API degrade safely
 
 test('credential and session guards still reject in-flight invalidation', async () => {
   for (const change of ['session','model','fingerprint','extra-key']) {
-    const h = await createHarness(change === 'extra-key' ? { config: JSON.stringify([{id:'extra',reuseAdapter:'alpha'}]), configured: () => false } : {});
+    const h = await createHarness(change === 'extra-key' ? { config: JSON.stringify({ sources: [{id:'extra',reuseAdapter:'alpha'}] }), configured: () => false } : {});
     h.state.query = async (_adapter,_auth,_signal,_timeout,guard) => {
       if (change === 'session') h.ctx.sessionManager.getSessionId = () => 'other-session';
       if (change === 'model') h.ctx.model = {provider:'alpha',id:'other-model'};

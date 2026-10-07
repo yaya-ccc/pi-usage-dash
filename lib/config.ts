@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Adapter } from "./types.ts";
+import type { Adapter, StatusConfig, StatusOverride } from "./types.ts";
 
 /** usage-dash.json 的单条配置（额外用量源声明） */
 export interface ExtraSource {
@@ -18,31 +18,117 @@ export interface ExtraEntry {
 	baseUrl: string;
 }
 
+/** 顶层对象 schema 的解析结果：额外源 + 状态栏覆盖配置 + 警告 */
+export interface DashConfig {
+	sources: ExtraSource[];
+	status: StatusConfig;
+	warnings: string[];
+}
+
 /** agent 目录：与 pi 的 PI_CODING_AGENT_DIR 约定一致，默认 ~/.pi/agent */
 function agentDir(): string {
 	return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
 }
 
-/** 读取并校验额外源配置；文件缺失视为无额外源（不警告），其余错误降级为警告 */
-export function loadExtraSources(): { sources: ExtraSource[]; warnings: string[] } {
+/** 校验单个 StatusOverride 字段：非法字段降级为警告并忽略，不拖垮整段配置 */
+function parseStatusOverride(value: unknown, label: string, warnings: string[]): StatusOverride | undefined {
+	if (typeof value !== "object" || value === null) {
+		warnings.push(`${label}：应为对象，已忽略`);
+		return undefined;
+	}
+	const record = value as Record<string, unknown>;
+	const override: StatusOverride = {};
+	if (record.windows !== undefined) {
+		const windows = Array.isArray(record.windows) && record.windows.every(w => typeof w === "number" && Number.isSafeInteger(w) && w > 0)
+			? (record.windows as number[])
+				: undefined;
+		if (windows) override.windows = windows;
+		else warnings.push(`${label}.windows：应为正整数数组（分钟数），已忽略`);
+	}
+	if (record.maxSpans !== undefined) {
+		if (typeof record.maxSpans === "number" && Number.isSafeInteger(record.maxSpans) && record.maxSpans > 0)
+			override.maxSpans = record.maxSpans;
+		else warnings.push(`${label}.maxSpans：应为正整数，已忽略`);
+	}
+	if (record.tags !== undefined) {
+		const tags: Record<string, string> = {};
+		const entries = Object.entries(record.tags as Record<string, unknown>);
+		if (typeof record.tags === "object" && record.tags !== null && entries.every(([k, v]) => /^\d+$/.test(k) && typeof v === "string" && v.trim())) {
+			for (const [k, v] of entries) tags[k] = (v as string).trim();
+			override.tags = tags;
+		} else {
+			warnings.push(`${label}.tags：应为「分钟数字符串 → 标签」的非空字符串映射，已忽略`);
+		}
+	}
+	if (record.balanceFallback !== undefined) {
+		if (typeof record.balanceFallback === "boolean") override.balanceFallback = record.balanceFallback;
+		else warnings.push(`${label}.balanceFallback：应为布尔值，已忽略`);
+	}
+	return override;
+}
+
+/** 校验 status 配置段：default 与 providers 各自独立降级 */
+function parseStatusConfig(value: unknown, warnings: string[]): StatusConfig {
+	const status: StatusConfig = {};
+	if (value === undefined) return status;
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		warnings.push("status：应为对象 {default, providers}，已忽略");
+		return status;
+	}
+	const record = value as Record<string, unknown>;
+	const def = parseStatusOverride(record.default, "status.default", warnings);
+	if (def && Object.keys(def).length > 0) status.default = def;
+	if (record.providers !== undefined) {
+		if (typeof record.providers === "object" && record.providers !== null && !Array.isArray(record.providers)) {
+			const providers: Record<string, StatusOverride> = {};
+			for (const [id, entry] of Object.entries(record.providers as Record<string, unknown>)) {
+				if (!id.trim()) continue;
+				const override = parseStatusOverride(entry, `status.providers."${id}"`, warnings);
+				if (override && Object.keys(override).length > 0) providers[id] = override;
+			}
+			if (Object.keys(providers).length > 0) status.providers = providers;
+		} else {
+			warnings.push("status.providers：应为按 provider id 索引的对象，已忽略");
+		}
+	}
+	return status;
+}
+
+/** 读取并校验 usage-dash.json（对象 schema：{sources, status}）；文件缺失视为空配置（不警告），其余错误降级为警告 */
+export function loadDashConfig(): DashConfig {
 	const warnings: string[] = [];
+	const empty: DashConfig = { sources: [], status: {}, warnings };
 	let raw: string;
 	try {
 		raw = readFileSync(join(agentDir(), "usage-dash.json"), "utf8");
 	} catch {
-		return { sources: [], warnings }; // 未配置：仅内置源
+		return empty; // 未配置：仅内置源、状态栏走引擎默认
 	}
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(raw);
 	} catch (error) {
-		return { sources: [], warnings: [`usage-dash.json 不是合法 JSON：${(error as Error).message}`] };
+		return { ...empty, warnings: [`usage-dash.json 不是合法 JSON：${(error as Error).message}`] };
 	}
-	if (!Array.isArray(parsed)) {
-		return { sources: [], warnings: ["usage-dash.json 顶层应为数组 [{id, reuseAdapter, …}]"] };
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		// v0.1.x 顶层数组 schema 已废弃，不兼容（迁移：数组包进 {"sources": …}）
+		return { ...empty, warnings: ["usage-dash.json 顶层应为对象 {sources: […], status: {…}}（v0.2 起不再接受顶层数组）"] };
 	}
+	const record = parsed as Record<string, unknown>;
 	const sources: ExtraSource[] = [];
-	parsed.forEach((item, index) => {
+	if (record.sources !== undefined) {
+		if (!Array.isArray(record.sources)) {
+			warnings.push("sources：应为数组 [{id, reuseAdapter, …}]，已忽略");
+		} else {
+			record.sources.forEach(parseSourceEntry(sources, warnings));
+		}
+	}
+	return { sources, status: parseStatusConfig(record.status, warnings), warnings };
+}
+
+/** 解析单条额外源：字段级校验，非法条目降级为警告 */
+function parseSourceEntry(sources: ExtraSource[], warnings: string[]) {
+	return (item: unknown, index: number): void => {
 		const nth = `配置第 ${index + 1} 条`;
 		if (typeof item !== "object" || item === null) {
 			warnings.push(`${nth}：不是对象，已跳过`);
@@ -73,8 +159,7 @@ export function loadExtraSources(): { sources: ExtraSource[]; warnings: string[]
 			displayName: record.displayName,
 			baseUrl: record.baseUrl,
 		});
-	});
-	return { sources, warnings };
+	};
 }
 
 /** provider 是否已注册并登录（凭据已存储）；探测失败按未配置处理 */
@@ -100,7 +185,7 @@ export async function resolveExtras(
 	signal?: AbortSignal,
 ): Promise<{ entries: ExtraEntry[]; warnings: string[] }> {
 	signal?.throwIfAborted();
-	const { sources, warnings } = loadExtraSources();
+	const { sources, warnings } = loadDashConfig();
 	const registry = (
 		ctx as {
 			modelRegistry?: {

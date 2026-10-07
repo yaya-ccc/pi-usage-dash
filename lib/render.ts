@@ -1,5 +1,5 @@
 import { usageAdapters } from "@narumitw/pi-usage/dist/index.ts";
-import { loadExtraSources } from "./config.ts";
+import { loadDashConfig } from "./config.ts";
 import { bucketFraction, pad, fmtReset, fmtMetricValue, makeBar, padEndWidth, displayWidth } from "./format.ts";
 import type { Adapter, QueryResult } from "./types.ts";
 
@@ -122,7 +122,7 @@ export function renderScreen(
 	// 活跃 provider 不在支持列表时的提示（额外源在配置文件里声明）
 	const knownAdapters = [
 		...(usageAdapters() as Adapter[]),
-		...loadExtraSources().sources.map((s) => ({
+		...loadDashConfig().sources.map((s) => ({
 			id: s.id,
 			displayName: s.displayName?.trim() || s.id,
 		})),
