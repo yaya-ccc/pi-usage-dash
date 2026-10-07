@@ -1,5 +1,6 @@
 /** /usage 命令和 pi 生命周期入口；查询引擎与兼容性说明见 README.md。 */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isStaleExtensionContextError } from "@narumitw/pi-usage/dist/index.ts";
 import { queryAll } from "../lib/query.ts";
 import { renderScreen } from "../lib/render.ts";
 import { clearStatus, publishFromResults, refreshStatus, startStatusTimer, stopStatusTimer } from "../lib/status.ts";
@@ -44,8 +45,13 @@ export default function usageDash(pi: ExtensionAPI): void {
 					ctx.ui.notify(lines.join("\n"));
 				}
 			} catch (error) {
-				if (error instanceof Error && error.message.includes("stale")) return;
-				ctx.ui.notify(`/usage 失败: ${error instanceof Error ? error.message : String(error)}`, "error");
+				if (isStaleExtensionContextError(error) ||
+					(error instanceof Error && error.name === "AbortError")) return;
+				try {
+					ctx.ui.notify(`/usage 失败: ${error instanceof Error ? error.message : String(error)}`, "error");
+				} catch {
+					/* 错误通知也不能再次访问失效的 UI 而逃出命令边界。 */
+				}
 			}
 		},
 	});

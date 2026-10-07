@@ -97,7 +97,9 @@ function extraIsConfigured(ctx: unknown, id: string): boolean {
 export async function resolveExtras(
 	ctx: unknown,
 	builtins: Adapter[],
+	signal?: AbortSignal,
 ): Promise<{ entries: ExtraEntry[]; warnings: string[] }> {
+	signal?.throwIfAborted();
 	const { sources, warnings } = loadExtraSources();
 	const registry = (
 		ctx as {
@@ -114,6 +116,7 @@ export async function resolveExtras(
 		if (!builtinById.has(adapter.id)) builtinById.set(adapter.id, adapter);
 	}
 	for (const source of sources) {
+		signal?.throwIfAborted();
 		const reuse = builtinById.get(source.reuseAdapter);
 		if (!reuse) {
 			warnings.push(
@@ -136,6 +139,7 @@ export async function resolveExtras(
 				baseUrl = undefined;
 			}
 		}
+		signal?.throwIfAborted();
 		if (!baseUrl) {
 			warnings.push(`"${source.id}"：未配置 baseUrl 且 provider 无自身 baseUrl，已跳过`);
 			continue;

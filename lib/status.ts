@@ -1,6 +1,6 @@
-import { usageAdapters } from "@narumitw/pi-usage/dist/index.ts";
+import { isStaleExtensionContextError, usageAdapters } from "@narumitw/pi-usage/dist/index.ts";
 import { loadExtraSources } from "./config.ts";
-import { queryAll } from "./query.ts";
+import { cancelQueries, queryAll } from "./query.ts";
 import type { Adapter, Bucket, Metric, QueryResult, StatusSpan, UsageReport } from "./types.ts";
 
 const STATUS_KEY = "usage";
@@ -8,8 +8,11 @@ const STATUS_REFRESH_MS = 5 * 60_000;
 const STATUS_MAX_FAILURES = 3;
 
 let statusTimer: ReturnType<typeof setInterval> | undefined;
+let statusContext: unknown;
 let statusLast: StatusSpan[] = [];
 let statusFailures = 0;
+// 会话结束、模型切换和新查询都会作废旧结果，不能让迟到回调污染当前状态。
+let statusRevision = 0;
 
 /** 剩余比例着色档位，阈值与面板 barColor 一致 */
 export function tierColor(remainingPct: number): "success" | "warning" | "error" {
@@ -77,11 +80,15 @@ function renderSpans(spans: StatusSpan[], colorize: (color: string, s: string) =
 
 /** 无 UI（RPC/headless）或主题不可用时降级为纯文本 */
 function statusColorizer(ctx: unknown): (color: string, s: string) => string {
-	const theme = (ctx as { ui?: { theme?: { fg?: (c: never, s: string) => string } } }).ui?.theme;
-	// fg 是 theme 的方法,内部依赖 this.tokenAnsi,必须绑定后调用,否则 pi 会因未捕获异常退出
-	const fg = theme?.fg?.bind(theme);
-	// 颜色兜底也在失败处理路径上,任何主题异常都不得再向外抛
-	return fg ? (c, s) => { try { return fg(c as never, s); } catch { return s; } } : (_c, s) => s;
+	try {
+		// ui/theme 也可能是抛错的 getter；保护方法调用不足以覆盖失效 ctx。
+		const theme = (ctx as { ui?: { theme?: { fg?: (c: never, s: string) => string } } }).ui?.theme;
+		// fg 内部依赖 this.tokenAnsi，必须绑定后调用。
+		const fg = theme?.fg?.bind(theme);
+		return fg ? (c, s) => { try { return fg(c as never, s); } catch { return s; } } : (_c, s) => s;
+	} catch {
+		return (_c, s) => s;
+	}
 }
 
 function safeSetStatus(ctx: unknown, text: string | undefined): void {
@@ -96,6 +103,7 @@ function safeSetStatus(ctx: unknown, text: string | undefined): void {
 }
 
 export function clearStatus(ctx: unknown): void {
+	statusRevision += 1;
 	statusLast = [];
 	statusFailures = 0;
 	safeSetStatus(ctx, undefined);
@@ -108,7 +116,8 @@ function handleStatusQueryFailure(ctx: unknown): void {
 		clearStatus(ctx);
 		return;
 	}
-	safeSetStatus(ctx, renderSpans(statusLast, statusColorizer(ctx)) + statusColorizer(ctx)("dim", " ·stale"));
+	const colorize = statusColorizer(ctx);
+	safeSetStatus(ctx, renderSpans(statusLast, colorize) + colorize("dim", " ·stale"));
 }
 
 /** 活跃 provider 是否属于可查询集合（pi-usage 内置 + 配置文件里的额外源 id） */
@@ -121,6 +130,7 @@ function isStatusProvider(provider: string): boolean {
 
 /** 从既有查询结果发布活跃 provider 的状态（/usage 与定时/事件刷新共用） */
 export function publishFromResults(ctx: unknown, results: QueryResult[], provider: string | undefined): void {
+	statusRevision += 1;
 	if (!provider || !isStatusProvider(provider)) {
 		clearStatus(ctx);
 		return;
@@ -142,25 +152,32 @@ export function publishFromResults(ctx: unknown, results: QueryResult[], provide
 
 /** 定时/事件触发的刷新：只查活跃 provider（60s TTL 缓存与 /usage 天然去重） */
 export async function refreshStatus(ctx: unknown, providerOverride?: string): Promise<void> {
-	const provider =
-		providerOverride ?? (ctx as { model?: { provider?: string } }).model?.provider;
-	if (!provider || !isStatusProvider(provider)) {
-		clearStatus(ctx);
-		return;
-	}
+	const revision = ++statusRevision;
 	try {
+		const provider =
+			providerOverride ?? (ctx as { model?: { provider?: string } }).model?.provider;
+		if (!provider || !isStatusProvider(provider)) {
+			clearStatus(ctx);
+			return;
+		}
 		const { results } = await queryAll(ctx, false, provider);
+		if (revision !== statusRevision) return;
 		publishFromResults(ctx, results, provider);
-	} catch {
+	} catch (error) {
+		if (revision !== statusRevision || isStaleExtensionContextError(error) ||
+			(error instanceof Error && error.name === "AbortError")) return;
 		handleStatusQueryFailure(ctx);
 	}
 }
 
 /** 幂等启动：立即刷一次 + 5 分钟定时兜底（空闲会话也有更新） */
 export function startStatusTimer(ctx: unknown): void {
+	statusContext = ctx;
 	void refreshStatus(ctx);
 	if (statusTimer !== undefined) return;
-	statusTimer = setInterval(() => void refreshStatus(ctx), STATUS_REFRESH_MS);
+	statusTimer = setInterval(() => {
+		if (statusContext !== undefined) void refreshStatus(statusContext);
+	}, STATUS_REFRESH_MS);
 	// headless/RPC 模式下不能让定时器阻止进程退出;交互模式有其他句柄,不受影响
 	statusTimer.unref?.();
 }
@@ -168,4 +185,9 @@ export function startStatusTimer(ctx: unknown): void {
 export function stopStatusTimer(): void {
 	if (statusTimer !== undefined) clearInterval(statusTimer);
 	statusTimer = undefined;
+	statusContext = undefined;
+	cancelQueries();
+	statusRevision += 1;
+	statusLast = [];
+	statusFailures = 0;
 }

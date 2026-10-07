@@ -45,7 +45,8 @@ export async function createHarness(options = {}) {
       finally { state.active--; }
     },
     redactUsageError: (message, secrets = []) => secrets.reduce((s, secret) => s.split(String(secret)).join('[REDACTED]'), message),
-    abortError: () => new Error('aborted'),
+    abortError: () => Object.assign(new Error('aborted'), { name: 'AbortError' }),
+    isStaleExtensionContextError: error => error instanceof Error && error.message.includes('This extension ctx is stale after session replacement or reload'),
   };
   const context = vm.createContext({
     console, AbortController, Error,
@@ -62,8 +63,14 @@ export async function createHarness(options = {}) {
     '@narumitw/pi-usage/dist/index.ts': engine,
   };
   const modules = new Map();
-  async function load(file) {
-    if (modules.has(file)) return modules.get(file);
+  const loading = new Map();
+  function load(file) {
+    // The linker requests shared dependencies concurrently; cache the pending
+    // load too, otherwise commands and lifecycle handlers get different state.
+    if (!loading.has(file)) loading.set(file, createModule(file));
+    return loading.get(file);
+  }
+  async function createModule(file) {
     if (mocks[file]) {
       const exports = mocks[file];
       const mod = new vm.SyntheticModule(Object.keys(exports), function () {
@@ -81,8 +88,9 @@ export async function createHarness(options = {}) {
   await entry.evaluate();
   entry.namespace.default({ registerCommand: (name, command) => commands.set(name, command), on: (name, fn) => events.set(name, fn) });
   return { state, ctx, api: entry.namespace, commands, events,
+    status: modules.get(resolve(dirname(entry.identifier), '../lib/status.ts'))?.namespace,
     command: (args = '') => commands.get('usage').handler(args, ctx),
-    event: (name, event = {}) => events.get(name)(event, ctx),
+    event: (name, event = {}, eventCtx = ctx) => events.get(name)(event, eventCtx),
     settle: async () => { for (let i = 0; i < 100; i++) await Promise.resolve(); },
   };
 }

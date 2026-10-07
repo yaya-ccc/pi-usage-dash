@@ -12,7 +12,7 @@
 ## 安装
 
 ```bash
-pi install git:github.com/yaya-ccc/pi-usage-dash@v0.1.0
+pi install git:github.com/yaya-ccc/pi-usage-dash@v0.1.3
 ```
 
 > 若同时以 pi 包形式安装了 `@narumitw/pi-usage` 本体，请禁用其扩展入口避免 `/usage` 命令冲突（本扩展只将它用作查询引擎库）：
@@ -90,11 +90,18 @@ npm pack --dry-run     # 检查发布文件
 | `lib/render.ts` | 仪表盘面板与整屏文本 |
 | `tests/` | 模拟 pi / 查询引擎的回归测试及原版输出快照 |
 
-测试使用 Node 内置测试运行器和 VM 模块，不增加运行时依赖，不读取真实账号、不请求用量 API；运行时的 VM Modules 实验性提示属正常现象。覆盖缓存边界、强制刷新、并发、排序、端点回退、配置警告、错误脱敏、状态栏降级等。
+测试使用 Node 内置测试运行器和 VM 模块，不增加运行时依赖，不读取真实账号、不请求用量 API；运行时的 VM Modules 实验性提示属正常现象。覆盖缓存边界、强制刷新、并发、排序、端点回退、配置警告、错误脱敏、状态栏降级，以及会话替换 / 重载时的查询取消、失效 ctx 和迟到结果。
 
 ### 查询引擎升级检查
 
-`@narumitw/pi-usage` 固定为 `0.61.2`。升级前核对 `@narumitw/pi-usage/dist/index.ts` 中以下导出及其调用参数，再跑回归测试并用实际账号验证：`usageAdapters`、`providerIsConfigured`、`resolveUsageAuth`、`queryProviderUsage`、`redactUsageError`、`abortError`。
+`@narumitw/pi-usage` 固定为 `0.61.2`。升级前核对 `@narumitw/pi-usage/dist/index.ts` 中以下导出及其调用参数，再跑回归测试并用实际账号验证：`usageAdapters`、`providerIsConfigured`、`resolveUsageAuth`、`queryProviderUsage`、`redactUsageError`、`abortError`、`isStaleExtensionContextError`。
+
+## v0.1.3 修复
+
+- 修复会话替换或 `/reload` 后，后台刷新在失败降级路径访问旧 `ctx.ui` 导致 Pi 崩溃。
+- 会话结束时中止所有未完成查询（含 `/usage`），取消后不再校验旧上下文或写入缓存。
+- 定时器跟随最新事件上下文；忽略过期刷新结果，并重置跨会话的状态历史。
+- 主题 getter 和错误通知失败安全降级；保留既有配额展示、缓存和连续失败清空行为。
 
 ## License
 
