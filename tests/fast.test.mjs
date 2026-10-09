@@ -93,6 +93,43 @@ test('message_end: 未登记的普通请求不做任何改写', async () => {
   assert.equal(result, undefined);
 });
 
+test('补充型号 gpt-6.1-sol：/fast 可切换且改写与标注均生效', async () => {
+  const model61 = { provider: 'openai-codex', id: 'gpt-6.1-sol', baseUrl: 'https://chatgpt.com/backend-api', api: 'openai-codex-responses' };
+  const { fast, ctx, commands, events, state, settle } = await createHarness();
+  ctx.hasUI = true;
+  ctx.model = model61;
+  // 库替身只认 allowlist 内型号，补充型号的可用性完全走本地路径
+  await commands.get('fast').handler('', ctx);
+  await settle();
+  assert.deepEqual(plain(state.fastPatches ?? []), [{ codexFastMode: true }]);
+  const out = events.get('before_provider_request')({ payload: { model: 'gpt-6.1-sol' } }, ctx);
+  assert.equal(out.service_tier, 'priority');
+  assert.deepEqual(plain(fast.fastStatusSpans(model61, true)), [{ text: 'fast', color: 'warning' }]);
+  // 非官方端点仍拒绝
+  const proxied = { ...model61, baseUrl: 'https://proxy.example/v1' };
+  const denied = await createHarness();
+  denied.ctx.hasUI = true;
+  denied.ctx.model = proxied;
+  await denied.commands.get('fast').handler('', denied.ctx);
+  await denied.settle();
+  assert.equal(denied.state.fastPatches, undefined);
+});
+
+test('补充型号 gpt-6.1-sol：fast 成本按 2 倍校正', async () => {
+  const model61 = { provider: 'openai-codex', id: 'gpt-6.1-sol', baseUrl: 'https://chatgpt.com/backend-api', api: 'openai-codex-responses' };
+  const { ctx, events, settle } = await createHarness({
+    fastMode: true,
+    fastRewrite: (payload, model, enabled) => (enabled ? { ...payload, service_tier: 'priority' } : payload),
+  });
+  ctx.model = model61;
+  events.get('before_provider_request')({ payload: {} }, ctx);
+  const usage = { input: 1000, output: 2000, cacheRead: 0, cacheWrite: 0, cost: { input: 0.002, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.022 } };
+  const result = events.get('message_end')({ message: { role: 'assistant', provider: 'openai-codex', model: 'gpt-6.1-sol', usage } }, ctx);
+  await settle();
+  assert.equal(result.message.usage.cost.total, 0.022 * 2);
+  assert.equal(result.message.usage.cost.output, 0.02 * 2);
+});
+
 test('状态栏: fast 生效时 publishFromResults 前置 fast 标注', async () => {
   const { ctx, state, event, command, settle } = await createHarness({
     fastMode: true,

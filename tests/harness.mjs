@@ -48,6 +48,7 @@ export async function createHarness(options = {}) {
     abortError: () => Object.assign(new Error('aborted'), { name: 'AbortError' }),
     isStaleExtensionContextError: error => error instanceof Error && error.message.includes('This extension ctx is stale after session replacement or reload'),
     errorMessage: error => error?.message ?? String(error),
+    CODEX_FAST_MODEL_IDS: new Set(['gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-sol']),
     // fast 纯函数：默认与库内置语义一致的可控替身，给 fastStatusSpans / /fast / 改写链路用
     codexFastAvailability: (model, enabled) => state.fastAvailability ? state.fastAvailability(model, enabled)
       : (model?.provider === 'openai-codex' ? { kind: 'available', enabled } : { kind: 'not-codex' }),
@@ -64,7 +65,7 @@ export async function createHarness(options = {}) {
     },
   };
   const context = vm.createContext({
-    console, AbortController, Error,
+    console, AbortController, Error, URL,
     Date: class extends Date { static now() { return state.now; } },
     process: { env: { PI_CODING_AGENT_DIR: '/test-agent' } },
     setInterval: (fn, ms) => { const timer = { fn, ms, unref() { this.unreferenced = true; } }; state.timers.push(timer); return timer; },
@@ -75,6 +76,7 @@ export async function createHarness(options = {}) {
     'node:os': { homedir: () => '/home/test' },
     'node:path': { join: (...args) => args.join('/') },
     '@earendil-works/pi-coding-agent': { readStoredCredential: async id => state.credential?.(id) },
+    '@earendil-works/pi-ai': { calculateCost: (_model, usage) => usage },
     '@narumitw/pi-usage/dist/index.ts': engine,
   };
   const modules = new Map();

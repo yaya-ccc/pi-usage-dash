@@ -41,7 +41,7 @@ pi install git:github.com/yaya-ccc/pi-usage-dash@v0.2.0
 
 - `/fast` 对活跃的 OpenAI Codex 模型切换 Fast（`service_tier: priority`），偏好持久化在 `~/.pi/agent/pi-usage.json` 的 `codexFastMode`（与 @narumitw/pi-usage 兼容）。
 - 生效时状态栏窗口序列前显示 `fast` 标注；fast 响应的 token 成本按 2（gpt-5.5 为 2.5）倍校正。
-- 支持模型：gpt-5.5 / gpt-5.6-luna / 5.6-sol / 5.6-terra / 6-sol，且 baseUrl 为官方 chatgpt.com。
+- 支持模型：gpt-5.5 / gpt-5.6-luna / 5.6-sol / 5.6-terra / 6-sol，且 baseUrl 为官方 chatgpt.com。另外本地补充 gpt-6.1-sol（服务端已验证接受 priority 档，库 allowlist 未收录），成本按 2 倍估算。
 - 相比上游额外支持 pi-codex-accounts 克隆的 `openai-codex-<label>` 账号（其请求在线上本就以 openai-codex 名义发出）。
 
 ## 配置文件
