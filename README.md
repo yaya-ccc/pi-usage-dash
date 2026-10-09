@@ -13,7 +13,7 @@
 ## 安装
 
 ```bash
-pi install git:github.com/yaya-ccc/pi-usage-dash@v0.3.2
+pi install git:github.com/yaya-ccc/pi-usage-dash@v0.2.1
 ```
 
 > 若同时以 pi 包形式安装了 `@narumitw/pi-usage` 本体，请禁用其扩展入口避免 `/usage` 命令冲突（本扩展只将它用作查询引擎库）：
@@ -137,7 +137,7 @@ npm pack --dry-run     # 检查发布文件
 
 `@narumitw/pi-usage` 固定为 `0.61.2`。升级前核对 `@narumitw/pi-usage/dist/index.ts` 中以下导出及其调用参数，再跑回归测试并用实际账号验证：`usageAdapters`、`providerIsConfigured`、`resolveUsageAuth`、`queryProviderUsage`、`redactUsageError`、`abortError`、`isStaleExtensionContextError`。
 
-## v0.3.2 Fast 状态栏间距修复
+## v0.2.1 Codex Fast 与状态栏间距修复
 
 - 修复 Fast 标记与配额数字黏连，保持各片段独立着色。
 - 关闭 Fast 或无配额数据时不留多余空格。
