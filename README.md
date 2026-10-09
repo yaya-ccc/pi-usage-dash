@@ -13,7 +13,7 @@
 ## 安装
 
 ```bash
-pi install git:github.com/yaya-ccc/pi-usage-dash@v0.2.0
+pi install git:github.com/yaya-ccc/pi-usage-dash@v0.3.2
 ```
 
 > 若同时以 pi 包形式安装了 `@narumitw/pi-usage` 本体，请禁用其扩展入口避免 `/usage` 命令冲突（本扩展只将它用作查询引擎库）：
@@ -40,7 +40,7 @@ pi install git:github.com/yaya-ccc/pi-usage-dash@v0.2.0
 ### Codex Fast 模式
 
 - `/fast` 对活跃的 OpenAI Codex 模型切换 Fast（`service_tier: priority`），偏好持久化在 `~/.pi/agent/pi-usage.json` 的 `codexFastMode`（与 @narumitw/pi-usage 兼容）。
-- 生效时状态栏窗口序列前显示 `fast` 标注；fast 响应的 token 成本按 2（gpt-5.5 为 2.5）倍校正。
+- 生效时状态栏显示 `fast 83%·5h 44%·7d`（标注与用量间保留空格）；fast 响应的 token 成本按 2（gpt-5.5 为 2.5）倍校正。
 - 支持模型：gpt-5.5 / gpt-5.6-luna / 5.6-sol / 5.6-terra / 6-sol，且 baseUrl 为官方 chatgpt.com。另外本地补充 gpt-6.1-sol（服务端已验证接受 priority 档，库 allowlist 未收录），成本按 2 倍估算。
 - 相比上游额外支持 pi-codex-accounts 克隆的 `openai-codex-<label>` 账号（其请求在线上本就以 openai-codex 名义发出）。
 
@@ -136,6 +136,12 @@ npm pack --dry-run     # 检查发布文件
 ### 查询引擎升级检查
 
 `@narumitw/pi-usage` 固定为 `0.61.2`。升级前核对 `@narumitw/pi-usage/dist/index.ts` 中以下导出及其调用参数，再跑回归测试并用实际账号验证：`usageAdapters`、`providerIsConfigured`、`resolveUsageAuth`、`queryProviderUsage`、`redactUsageError`、`abortError`、`isStaleExtensionContextError`。
+
+## v0.3.2 Fast 状态栏间距修复
+
+- 修复 Fast 标记与配额数字黏连，保持各片段独立着色。
+- 关闭 Fast 或无配额数据时不留多余空格。
+- 新增纯文本与空数据回归测试，发布包含此前的 `/fast` 功能与标签账号支持。
 
 ## v0.2.0 状态栏通用窗口引擎
 

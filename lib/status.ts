@@ -177,7 +177,10 @@ export function publishFromResults(ctx: unknown, results: QueryResult[], provide
 	}
 	// fast 标注跟随活跃模型而非报告本身：切模型即变，无需改查询链路
 	const model = (ctx as { model?: Parameters<typeof fastStatusSpans>[0] }).model;
-	const spans = [...fastStatusSpans(model, codexFastModeNow()), ...buildStatusSpans(found.report, resolveStatusOverride(provider))];
+	const fast = fastStatusSpans(model, codexFastModeNow());
+	const usage = buildStatusSpans(found.report, resolveStatusOverride(provider));
+	// 分隔符单独成片段，保留标记与用量各自的颜色；任一侧为空时不留多余空格。
+	const spans = [...fast, ...(fast.length && usage.length ? [{ text: " " }] : []), ...usage];
 	statusFailures = 0;
 	if (spans.length === 0) {
 		clearStatus(ctx); // 查询成功但无窗口/余额数据（含 balanceFallback 关闭）

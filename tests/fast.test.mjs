@@ -139,10 +139,39 @@ test('状态栏: fast 生效时 publishFromResults 前置 fast 标注', async ()
   await command('');
   await settle();
   const published = state.statuses.at(-1);
-  assert.match(published.text, /fast/);
+  assert.equal(published.text.replace(/color:\w+\(([^)]*)\)/g, '$1'), 'fast 42%·5h 87%·7d');
   // 关闭后标注消失
   state.fastMode = false;
   await event('model_select', { model: codexModel });
   await settle();
   assert.doesNotMatch(state.statuses.at(-1).text, /fast/);
+});
+
+test('状态栏: 纯文本 fast 与用量分隔，关闭后无多余空格', async () => {
+  const { ctx, state, command, settle } = await createHarness({
+    fastMode: true,
+    adapters: [{ id: 'openai-codex', displayName: 'OpenAI Codex' }],
+  });
+  ctx.model = codexModel;
+  ctx.ui.theme.fg = (_color, text) => text;
+  await command();
+  await settle();
+  assert.equal(state.statuses.at(-1).text, 'fast 42%·5h 87%·7d');
+  state.fastMode = false;
+  await command();
+  await settle();
+  assert.equal(state.statuses.at(-1).text, '42%·5h 87%·7d');
+});
+
+test('状态栏: 无用量数据时 fast 标记无尾随空格', async () => {
+  const { ctx, state, command, settle } = await createHarness({
+    fastMode: true,
+    adapters: [{ id: 'openai-codex', displayName: 'OpenAI Codex' }],
+    query: async () => ({ providerId: 'openai-codex', buckets: [], metrics: [] }),
+  });
+  ctx.model = codexModel;
+  ctx.ui.theme.fg = (_color, text) => text;
+  await command();
+  await settle();
+  assert.equal(state.statuses.at(-1).text, 'fast');
 });
