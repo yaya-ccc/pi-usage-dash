@@ -1,5 +1,6 @@
 import { isStaleExtensionContextError, usageAdapters } from "@narumitw/pi-usage/dist/index.ts";
 import { loadDashConfig } from "./config.ts";
+import { codexFastModeNow, fastStatusSpans } from "./fast.ts";
 import { cancelQueries, queryAll } from "./query.ts";
 import type { Adapter, Bucket, Metric, QueryResult, StatusOverride, StatusSpan, UsageReport } from "./types.ts";
 
@@ -174,7 +175,9 @@ export function publishFromResults(ctx: unknown, results: QueryResult[], provide
 		handleStatusQueryFailure(ctx);
 		return;
 	}
-	const spans = buildStatusSpans(found.report, resolveStatusOverride(provider));
+	// fast 标注跟随活跃模型而非报告本身：切模型即变，无需改查询链路
+	const model = (ctx as { model?: Parameters<typeof fastStatusSpans>[0] }).model;
+	const spans = [...fastStatusSpans(model, codexFastModeNow()), ...buildStatusSpans(found.report, resolveStatusOverride(provider))];
 	statusFailures = 0;
 	if (spans.length === 0) {
 		clearStatus(ctx); // 查询成功但无窗口/余额数据（含 balanceFallback 关闭）

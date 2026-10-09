@@ -1,6 +1,7 @@
-/** /usage 命令和 pi 生命周期入口；查询引擎与兼容性说明见 README.md。 */
+/** /usage、/fast 命令和 pi 生命周期入口；查询引擎与兼容性说明见 README.md。 */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isStaleExtensionContextError } from "@narumitw/pi-usage/dist/index.ts";
+import { registerFastMode } from "../lib/fast.ts";
 import { queryAll } from "../lib/query.ts";
 import { renderScreen } from "../lib/render.ts";
 import { clearStatus, publishFromResults, refreshStatus, startStatusTimer, stopStatusTimer } from "../lib/status.ts";
@@ -58,6 +59,10 @@ export default function usageDash(pi: ExtensionAPI): void {
 
 	// statusline 生命周期：会话开始/每轮任务幂等启动定时；切模型清空重查；
 	// 会话结束停表。agent_start 兼作 pi-usage 式的"每轮刷新"语义。
+	// fast 模式：/fast 切换 + 请求改写 + 成本校正；toggle 后重刷状态栏以同步 fast 标注。
+	registerFastMode(pi, (ctx) => {
+		void refreshStatus(ctx);
+	});
 	pi.on("session_start", (_event, ctx) => startStatusTimer(ctx));
 	pi.on("agent_start", (_event, ctx) => startStatusTimer(ctx));
 	pi.on("model_select", (event, ctx) => {

@@ -47,6 +47,21 @@ export async function createHarness(options = {}) {
     redactUsageError: (message, secrets = []) => secrets.reduce((s, secret) => s.split(String(secret)).join('[REDACTED]'), message),
     abortError: () => Object.assign(new Error('aborted'), { name: 'AbortError' }),
     isStaleExtensionContextError: error => error instanceof Error && error.message.includes('This extension ctx is stale after session replacement or reload'),
+    errorMessage: error => error?.message ?? String(error),
+    // fast 纯函数：默认与库内置语义一致的可控替身，给 fastStatusSpans / /fast / 改写链路用
+    codexFastAvailability: (model, enabled) => state.fastAvailability ? state.fastAvailability(model, enabled)
+      : (model?.provider === 'openai-codex' ? { kind: 'available', enabled } : { kind: 'not-codex' }),
+    codexFastIsEffective: (model, enabled) => state.fastEffective ? state.fastEffective(model, enabled)
+      : (model?.provider === 'openai-codex' && Boolean(enabled)),
+    codexFastStatusLabel: (status, on) => (on ? `fast ${status}` : status),
+    correctCodexFastMessageCost: (message, model, fastRequested) => state.fastCorrect?.(message, model, fastRequested),
+    rewriteCodexFastPayload: (payload, model, enabled) => state.fastRewrite ? state.fastRewrite(payload, model, enabled) : payload,
+    createUsageSettingsRuntime: () => state.fastSettings ?? {
+      get: () => ({ kind: 'loaded', settings: { codexFastMode: state.fastMode ?? false } }),
+      reload: async () => { state.fastReloads = (state.fastReloads ?? 0) + 1; return { kind: 'loaded', settings: { codexFastMode: state.fastMode ?? false } }; },
+      update: async patch => { state.fastPatches = state.fastPatches ?? []; state.fastPatches.push(patch); state.fastMode = patch.codexFastMode ?? state.fastMode; },
+      flush: async () => { state.fastFlushes = (state.fastFlushes ?? 0) + 1; },
+    },
   };
   const context = vm.createContext({
     console, AbortController, Error,
@@ -89,6 +104,7 @@ export async function createHarness(options = {}) {
   entry.namespace.default({ registerCommand: (name, command) => commands.set(name, command), on: (name, fn) => events.set(name, fn) });
   return { state, ctx, api: entry.namespace, commands, events,
     status: modules.get(resolve(dirname(entry.identifier), '../lib/status.ts'))?.namespace,
+    fast: modules.get(resolve(dirname(entry.identifier), '../lib/fast.ts'))?.namespace,
     command: (args = '') => commands.get('usage').handler(args, ctx),
     event: (name, event = {}, eventCtx = ctx) => events.get(name)(event, eventCtx),
     settle: async () => { for (let i = 0; i < 100; i++) await Promise.resolve(); },
